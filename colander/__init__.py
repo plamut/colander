@@ -4,6 +4,7 @@ import datetime
 import decimal
 import time
 import itertools
+import json
 import pprint
 import re
 import translationstring
@@ -449,6 +450,13 @@ class SchemaType(object):
     def cstruct_children(self, node, cstruct):
         return []
 
+    def _to_json_dict(self, node):
+        raise NotImplementedError(
+            "Not yet supported for type <colander.{}>.".format(
+                node.typ.__class__.__name__)
+        )
+
+
 class Mapping(SchemaType):
     """ A type which represents a mapping of names to nodes.
 
@@ -628,6 +636,17 @@ class Mapping(SchemaType):
             return next_node.typ.get_value(next_node, appstruct[name], rest)
         return appstruct[path]
 
+    def _to_json_dict(self, node):
+        properties = {}
+        for c in node.children:
+            properties[c.name] = c._to_json_dict()
+
+        return dict(
+            name=node.name,
+            type='object',
+            properties=properties,
+        )
+
 
 class Positional(object):
     """
@@ -777,6 +796,17 @@ class Tuple(Positional, SchemaType):
             return next_node.typ.get_value(next_node, appstruct[index], rest)
         return appstruct[index]
 
+    def _to_json_dict(self, node):
+        item_types = [
+            dict(name=c.name, type=c._to_json_dict()) for c in node.children]
+        return dict(
+            type='array',
+            length=len(node.children),
+            items=item_types,
+            description=node.description,
+            required=node.required
+        )
+
 
 class Set(SchemaType):
     """ A type representing a non-overlapping set of items.
@@ -808,6 +838,15 @@ class Set(SchemaType):
 
         return set(cstruct)
 
+    def _to_json_dict(self, node):
+        # item types not specified, Set can hold arbitrary items
+        return dict(
+            type='array',
+            distinct_items=True,
+            description=node.description,
+            required=node.required
+        )
+
 
 class List(SchemaType):
     """ Type representing an ordered sequence of items.
@@ -838,6 +877,18 @@ class List(SchemaType):
             )
 
         return list(cstruct)
+
+    def _to_json_dict(self, node):
+        item_types = [
+            dict(name=c.name, type=c._to_json_dict()) for c in node.children]
+
+        return dict(
+            type='array',
+            ordered=True,
+            items=item_types,
+            description=node.description,
+            required=node.required,
+        )
 
 
 class SequenceItems(list):
@@ -1026,6 +1077,18 @@ class Sequence(Positional, SchemaType):
             return next_node.typ.get_value(next_node, appstruct[index], rest)
         return appstruct[int(path)]
 
+    def _to_json_dict(self, node):
+        # NOTE: no IndexError here, SequenceSchema nodes are *required*
+        # to have exactly one child
+        item_type = node.children[0]._to_json_dict()
+
+        return dict(
+            type='array',
+            items=dict(type=item_type),
+            description=node.description,
+            required=node.required
+        )
+
 Seq = Sequence
 
 class String(SchemaType):
@@ -1129,6 +1192,13 @@ class String(SchemaType):
 
         return result
 
+    def _to_json_dict(self, node):
+        return dict(
+            type='string',
+            description=node.description,
+            required=node.required
+        )
+
 Str = String
 
 class Number(SchemaType):
@@ -1158,6 +1228,14 @@ class Number(SchemaType):
                           _('"${val}" is not a number',
                             mapping={'val':cstruct})
                           )
+
+    def _to_json_dict(self, node):
+        return dict(
+            type='number',
+            description=node.description,
+            required=node.required
+        )
+
 
 class Integer(Number):
     """ A type representing an integer.
@@ -1319,6 +1397,13 @@ class Boolean(SchemaType):
 
         return True
 
+    def _to_json_dict(self, node):
+        return dict(
+            type='boolean',
+            description=node.description,
+            required=node.required
+        )
+
 Bool = Boolean
 
 class GlobalObject(SchemaType):
@@ -1448,6 +1533,16 @@ class GlobalObject(SchemaType):
                           _('The dotted name "${name}" cannot be imported',
                             mapping={'name':cstruct}))
 
+    def _to_json_dict(self, node):
+        return dict(
+            type='object',
+            properties=dict(
+                package=node.typ.serialize(node, node.typ.package),
+            ),
+            description=node.description,
+            required=node.required,
+        )
+
 class DateTime(SchemaType):
     """ A type representing a Python ``datetime.datetime`` object.
 
@@ -1529,6 +1624,25 @@ class DateTime(SchemaType):
                                   mapping={'val':cstruct, 'err':e}))
         return result
 
+    def _to_json_dict(self, node):
+        return dict(
+            type='object',
+            properties=dict(
+                year=dict(type='number'),
+                month=dict(type='number'),
+                day=dict(type='number'),
+                hour=dict(type='number'),
+                minute=dict(type='number'),
+                second=dict(type='number'),
+                microsecond=dict(type='number'),
+                # TODO: define TZ properties
+                tzinfo=dict(type='object', required=False, properties={}),
+            ),
+            description=node.description,
+            required=node.required,
+        )
+
+
 class Date(SchemaType):
     """ A type representing a Python ``datetime.date`` object.
 
@@ -1598,6 +1712,18 @@ class Date(SchemaType):
                             mapping={'val':cstruct, 'err':e})
                           )
         return result
+
+    def _to_json_dict(self, node):
+        return dict(
+            type='object',
+            properties=dict(
+                year=dict(type='number'),
+                month=dict(type='number'),
+                day=dict(type='number'),
+            ),
+            description=node.description,
+            required=node.required,
+        )
 
 class Time(SchemaType):
     """ A type representing a Python ``datetime.time`` object.
@@ -1676,6 +1802,25 @@ class Time(SchemaType):
                                     mapping={'val':cstruct, 'err':e})
                                   )
         return result
+
+    def _to_json_dict(self, node):
+        return dict(
+            type='object',
+            properties=dict(
+                year=dict(type='number'),
+                month=dict(type='number'),
+                day=dict(type='number'),
+                hour=dict(type='number'),
+                minute=dict(type='number'),
+                second=dict(type='number'),
+                microsecond=dict(type='number'),
+                # TODO: define TZ properties
+                tzinfo=dict(type='object', required=False, properties={}),
+            ),
+            description=node.description,
+            required=node.required,
+        )
+
 
 def timeparse(t, format):
     return datetime.datetime(*time.strptime(t, format)[0:6]).time()
@@ -1925,6 +2070,21 @@ class _SchemaNode(object):
             if not isinstance(self.validator, deferred): # unbound
                 self.validator(self, appstruct)
         return appstruct
+
+    def _to_json_dict(self):
+        """Return the schema as a nested dictionary which can be
+        serialized to JSON.
+
+        The structure (roughly) follow the following draft:
+        http://tools.ietf.org/html/draft-zyp-json-schema-04
+        """
+        # XXX: what about node validation properties?
+        # (min. value, max. value, max length etc.)
+        return self.typ._to_json_dict(self)
+
+    def to_json(self):
+        """Convert JSON dict structure to JSON string."""
+        return json.dumps(self._to_json_dict())
 
     def add(self, node):
         """ Append a subnode to this node. ``node`` must be a SchemaNode."""
